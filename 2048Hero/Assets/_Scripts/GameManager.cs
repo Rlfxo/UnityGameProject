@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
+using DG.Tweening;
 using UnityEngine;
 using Random = UnityEngine.Random;
 
@@ -12,6 +13,10 @@ public class GameManager : MonoBehaviour{
     [SerializeField] private Block _blockPrefab;
     [SerializeField] private SpriteRenderer _boardPrefab;
     [SerializeField] private List<BlockType> _types;
+    [SerializeField] private float _travelTime = 0.2f;
+    [SerializeField] private int _winCondition = 2048;
+
+    [SerializeField] private GameObject _winScreen, _loseScreen;
 
     private List<Node> _nodes;
     private List<Block> _blocks;
@@ -40,12 +45,23 @@ public class GameManager : MonoBehaviour{
             case GameState.Moving:
                 break;
             case GameState.Win:
+                _winScreen.SetActive(true);
                 break;
             case GameState.Lose:
+                _loseScreen.SetActive(true);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(newState), newState, null);
         }
+    }
+
+    void Update() {
+        if(_state != GameState.WaitingInput) return;
+
+        if(Input.GetKeyDown(KeyCode.LeftArrow)) Shift(Vector2.left);
+        if(Input.GetKeyDown(KeyCode.RightArrow)) Shift(Vector2.right);
+        if(Input.GetKeyDown(KeyCode.UpArrow)) Shift(Vector2.up);
+        if(Input.GetKeyDown(KeyCode.DownArrow)) Shift(Vector2.down);
     }
 
     void GenerateGrid() {
@@ -75,14 +91,87 @@ public class GameManager : MonoBehaviour{
         var freeNodes = _nodes.Where(n => n.OccupiedBlock == null).OrderBy(b => Random.value).ToList();
 
         foreach (var node in freeNodes.Take(amount)){
-            var block = Instantiate(_blockPrefab, node.Pos, Quaternion.identity);
-            block.Init(GetBlockTypeByValue(Random.value > 0.8f ? 4 : 2));
+            SpawnBlockk(node, Random.value > 0.8f ? 4:2);
         }
 
         if(freeNodes.Count() == 1) {
-            //Lost the Game
+            ChangeState(GameState.Lose);
             return;
         }
+
+        ChangeState(_blocks.Any(b => b.Value == _winCondition) ? GameState.Win : GameState.WaitingInput);
+    }
+
+    void SpawnBlockk(Node node, int value) {
+        var block = Instantiate(_blockPrefab, node.Pos, Quaternion.identity);
+        block.Init(GetBlockTypeByValue(value));
+        block.SetBlock(node);
+        _blocks.Add(block);
+    }
+
+    void Shift(Vector2 dir){
+        ChangeState(GameState.Moving);
+
+        var orderedBlocks = _blocks.OrderBy(b => b.Pos.x).ThenBy(b => b.Pos.y).ToList();
+        if(dir == Vector2.right || dir == Vector2.up) orderedBlocks.Reverse();
+
+        foreach (var block in orderedBlocks) {
+            var next = block.Node;
+            do {
+                block.SetBlock(next);
+
+                var possibleNode = GetNodeAtPosition(next.Pos + dir);
+                if(possibleNode != null) {
+                    //We know a node is present
+                    //If it's a possible to merge, set merge
+                    if(possibleNode.OccupiedBlock != null && possibleNode.OccupiedBlock.CanMerge(block.Value)){
+                        block.MergeBlock(possibleNode.OccupiedBlock);
+                    }
+                    //Otherwise, can we move to this spot?
+                    else if(possibleNode.OccupiedBlock == null) next = possibleNode;
+                    
+                    //None hit? End do while loop
+                }
+                
+
+            } while(next != block.Node);
+
+           //block.transform.DOMove(block.Node.Pos, _travelTime);
+
+        }
+
+        var sequence = DOTween.Sequence();
+
+        foreach(var block in orderedBlocks) {
+            var movePoint = block.MergingBlock != null ? block.MergingBlock.Node.Pos : block.Node.Pos;
+
+            sequence.Insert(0, block.transform.DOMove(movePoint, _travelTime));
+        }
+
+        sequence.OnComplete(() => {
+            foreach(var block in orderedBlocks.Where(b => b.MergingBlock != null)) {
+                MergeBlock(block.MergingBlock,block);
+            }
+
+            ChangeState(GameState.SpawningBlocks);
+        });
+
+    }
+
+    void MergeBlock(Block baseBlock, Block mergingBlock) {
+        SpawnBlockk(baseBlock.Node, baseBlock.Value * 2);
+
+        RemoveBlock(baseBlock);
+        RemoveBlock(mergingBlock);
+    }
+
+    void RemoveBlock(Block block) {
+        _blocks.Remove(block);
+        Destroy(block.gameObject);
+    }
+
+    Node GetNodeAtPosition(Vector2 pos) {
+        return _nodes.FirstOrDefault(n => n.Pos == pos);
     }
 
 }
